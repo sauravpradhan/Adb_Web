@@ -3,6 +3,7 @@
 A tiny local web server that lets you use `adb` from your browser. A web page
 cannot talk to ADB directly, so this Java helper sits in the middle: the page
 sends HTTP requests, and the helper runs `adb` on your PC.
+Works in windows as of now , need to see permissions for Linux.
 
 ```
 Browser  ──HTTP──►  Java HttpServer (127.0.0.1:8765)  ──adb──►  adb server (5037)  ──USB──►  Android phone
@@ -91,6 +92,7 @@ treat this tool carefully.
 - Dedicated endpoints (`/api/install`, `/api/reboot`, ...)
 - Structured JSON request format with automatic `-s <serial>`
 - Optional port in a Node.js version of the web layer
+- Make it plug and play in linux machine
 
 ## License
 
