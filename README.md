@@ -7,6 +7,7 @@ sends HTTP requests, and the helper runs `adb` on your PC.
 ```
 Browser  ──HTTP──►  Java HttpServer (127.0.0.1:8765)  ──adb──►  adb server (5037)  ──USB──►  Android phone
 ```
+![Alt text](https://github.com/sauravpradhan/Adb_Web/blob/a5e463a65a3818936ac60020927902a0c00a15d8/arch.png "")
 
 No dependencies. It uses only the JDK's built-in `com.sun.net.httpserver`.
 
@@ -38,6 +39,7 @@ Open http://127.0.0.1:8765/?token=3f9c...
 
 Open **that exact URL**, including the token. Use a different port with
 `java -Dport=9000 AdbBrowserHelper`.
+![Alt text](https://github.com/sauravpradhan/Adb_Web/blob/a5e463a65a3818936ac60020927902a0c00a15d8/browser_view.png "")
 
 ## API
 
