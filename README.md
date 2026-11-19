@@ -86,6 +86,12 @@ treat this tool carefully.
   (live streaming would need WebSockets).
 - Starts a new `adb` process per request.
 
+## Use-cases
+
+- Shared device lab
+- ADB if not present in all machines
+- Managing fleet devices, I can only think of this as of now 
+
 ## Roadmap
 
 - Live logcat and shell over WebSocket
