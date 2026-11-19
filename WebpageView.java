@@ -2,6 +2,7 @@
 final class  WebpageView {
     private WebpageView() {}
 
+   
     static final String HTML = """
         <!doctype html>
         <html>
@@ -22,37 +23,41 @@ final class  WebpageView {
           <pre id="out"></pre>
           <script>
             const TOKEN = "__TOKEN__";
-            async function loadDevices() {
-              const msg = document.getElementById('msg');
-              const rows = document.getElementById('rows');
-              rows.textContent = '';
-              msg.textContent = 'Loading...';
-              try {
-                const r = await fetch('/api/devices', {headers: {'X-Token': TOKEN}});
-                if (!r.ok) { msg.textContent = 'Error ' + r.status + ': ' + await r.text(); return; }
-                const devices = await r.json();
-                msg.textContent = devices.length ? '' : 'No devices found.';
-                for (const d of devices) {
-                  const tr = rows.insertRow();
-                  for (const v of [d.serial, d.state, d.model, d.product]) {
-                    tr.insertCell().textContent = v ?? '';
-                  }
-                }
-              } catch (e) { msg.textContent = 'Request failed: ' + e; }
-            }
-            async function runCmd(e) {
-              e.preventDefault();
-              const out = document.getElementById('out');
-              out.textContent = 'Running...';
+            const $ = id => document.getElementById(id);
+
+            async function adb(cmd) {
               try {
                 const r = await fetch('/api/adb', {
-                  method: 'POST',
-                  headers: {'X-Token': TOKEN},
-                  body: document.getElementById('cmd').value
+                  method: 'POST', headers: {'X-Token': TOKEN}, body: cmd
                 });
-                out.textContent = await r.text();
-              } catch (err) { out.textContent = 'Request failed: ' + err; }
+                return await r.text();
+              } catch (e) { return 'Request failed: ' + e; }
             }
+
+            async function loadDevices() {
+              $('rows').textContent = '';
+              $('msg').textContent = 'Loading...';
+              const text = await adb('devices -l');
+              if (!text.includes('List of devices')) { $('msg').textContent = text; return; }
+              const lines = text.split('\\n').map(l => l.trim())
+                .filter(l => l && !l.startsWith('List of') && !l.startsWith('*'));
+              $('msg').textContent = lines.length ? '' : 'No devices found.';
+              for (const line of lines) {
+                const [serial, state, ...props] = line.split(/\\s+/);
+                const get = k => (props.find(p => p.startsWith(k + ':')) || '').slice(k.length + 1);
+                const tr = $('rows').insertRow();
+                for (const v of [serial, state, get('model'), get('product')]) {
+                  tr.insertCell().textContent = v;
+                }
+              }
+            }
+
+            async function runCmd(e) {
+              e.preventDefault();
+              $('out').textContent = 'Running...';
+              $('out').textContent = await adb($('cmd').value);
+            }
+
             loadDevices();
           </script>
         </html>

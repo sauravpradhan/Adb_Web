@@ -2,142 +2,109 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
-import java.util.HexFormat;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 public class AdbBrowserHelper {
     private static final int PORT = Integer.getInteger("port", 8765);
-    private static final String ORIGIN_IP = "http://127.0.0.1:" + PORT;
-    private static final String ORIGIN_NAME = "http://localhost:" + PORT;
+    private static final int MAX_OUTPUT = 1_000_000;
+    private static final Set<String> ORIGINS =
+        Set.of("http://127.0.0.1:" + PORT, "http://localhost:" + PORT);
 
     // Random per-run secret. Only someone who sees the console URL has it.
-    // Make it more secure later  
+    // Make it more secure later
     private static final String TOKEN = newToken();
 
     public static void main(String[] args) throws Exception {
-        HttpServer server =
-            HttpServer.create(new InetSocketAddress("127.0.0.1", PORT), 0);
-
-        // UI page: needs ?token=... and a valid Host header.
-        server.createContext("/", exchange -> {
-            if (!hostOk(exchange)) { send(exchange, 403, "text/plain", "Bad Host"); return; }
-            if (!"/".equals(exchange.getRequestURI().getPath())) {
-                send(exchange, 404, "text/plain", "Not found");
-                return;
-            }
-            String q = exchange.getRequestURI().getRawQuery();
-            if (q == null || !tokenEquals(q.startsWith("token=") ? q.substring(6) : "")) {
-                send(exchange, 403, "text/plain",
-                    "Open the full URL printed by the helper (includes ?token=...)");
-                return;
-            }
-            send(exchange, 200, "text/html", WebpageView.HTML.replace("__TOKEN__", TOKEN));
-        });
-
-        server.createContext("/api/devices", exchange -> {
-            if (!authorized(exchange)) return;
-            if (!"GET".equals(exchange.getRequestMethod())) {
-                send(exchange, 405, "text/plain", "GET only");
-                return;
-            }
-            try {
-                Process adb = new ProcessBuilder("adb", "devices", "-l")
-                    .redirectErrorStream(true)
-                    .start();
-
-                ByteArrayOutputStream output = new ByteArrayOutputStream();
-                Thread reader = new Thread(() -> {
-                    try {
-                        adb.getInputStream().transferTo(output);
-                    } catch (IOException ignored) {
-                    }
-                });
-                reader.start();
-
-                if (!adb.waitFor(10, TimeUnit.SECONDS)) {
-                    adb.destroyForcibly();
-                    send(exchange, 504, "text/plain", "ADB timed out");
-                    return;
-                }
-                reader.join();
-
-                String text = output.toString(StandardCharsets.UTF_8);
-                send(exchange, 200, "application/json", devicesToJson(text));
-
-            } catch (IOException e) {
-                send(exchange, 500, "text/plain",
-                    "Could not start ADB. Check that adb is installed and on PATH.");
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                send(exchange, 500, "text/plain", "Request interrupted");
-            }
-        });
-
-        server.createContext("/api/adb", exchange -> {
-            if (!authorized(exchange)) return;
-            if (!"POST".equals(exchange.getRequestMethod())) {
-                send(exchange, 405, "text/plain", "POST only");
-                return;
-            }
-            try {
-                String line = new String(
-                    exchange.getRequestBody().readNBytes(4096), StandardCharsets.UTF_8);
-                List<String> argv = tokenize(line);
-                if (argv.isEmpty()) {
-                    send(exchange, 400, "text/plain", "Empty command");
-                    return;
-                }
-                List<String> cmd = new ArrayList<>();
-                cmd.add("adb");
-                cmd.addAll(argv); // argument list, never a shell string
-
-                Process p = new ProcessBuilder(cmd).redirectErrorStream(true).start();
-                p.getOutputStream().close(); // no stdin: interactive commands exit
-
-                ByteArrayOutputStream out = new ByteArrayOutputStream();
-                Thread reader = new Thread(() -> {
-                    byte[] buf = new byte[8192];
-                    try (var in = p.getInputStream()) {
-                        int n;
-                        while ((n = in.read(buf)) > 0) {
-                            if (out.size() < MAX_OUTPUT) out.write(buf, 0, n);
-                        }
-                    } catch (IOException ignored) {
-                    }
-                });
-                reader.start();
-
-                boolean done = p.waitFor(30, TimeUnit.SECONDS);
-                if (!done) p.destroyForcibly();
-                reader.join(2000);
-
-                String text = out.toString(StandardCharsets.UTF_8);
-                if (out.size() >= MAX_OUTPUT) text += "\n[output truncated]";
-                if (!done) text += "\n[timed out after 30s]";
-                send(exchange, 200, "text/plain", text.isEmpty() ? "(no output)" : text);
-            } catch (IOException e) {
-                send(exchange, 500, "text/plain",
-                    "Could not start ADB. Check that adb is installed and on PATH.");
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                send(exchange, 500, "text/plain", "Request interrupted");
-            }
-        });
-
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", PORT), 0);
+        server.createContext("/", AdbBrowserHelper::handlePage);
+        server.createContext("/api/adb", AdbBrowserHelper::handleAdb);
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
-        System.out.println("Open " + ORIGIN_IP + "/?token=" + TOKEN);
+        System.out.println("Open http://127.0.0.1:" + PORT + "/?token=" + TOKEN);
     }
 
-    // ---- security helpers -------------------------------------------------
+    // ---- handlers ---------------------------------------------------------
+
+    /** UI page: needs ?token=... and a valid Host header. */
+    private static void handlePage(HttpExchange ex) throws IOException {
+        if (!hostOk(ex)) { send(ex, 403, "text/plain", "Bad Host"); return; }
+        if (!"/".equals(ex.getRequestURI().getPath())) {
+            send(ex, 404, "text/plain", "Not found");
+            return;
+        }
+        String q = ex.getRequestURI().getRawQuery();
+        if (q == null || !tokenEquals(q.startsWith("token=") ? q.substring(6) : "")) {
+            send(ex, 403, "text/plain",
+                "Open the full URL printed by the helper (includes ?token=...)");
+            return;
+        }
+        send(ex, 200, "text/html", WebpageView.HTML.replace("__TOKEN__", TOKEN));
+    }
+
+    /** Runs one adb command (also used for "devices -l"). */
+    private static void handleAdb(HttpExchange ex) throws IOException {
+        if (!authorized(ex)) return;
+        if (!"POST".equals(ex.getRequestMethod())) {
+            send(ex, 405, "text/plain", "POST only");
+            return;
+        }
+        List<String> argv = tokenize(
+            new String(ex.getRequestBody().readNBytes(4096), StandardCharsets.UTF_8));
+        if (argv.isEmpty()) {
+            send(ex, 400, "text/plain", "Empty command");
+            return;
+        }
+        try {
+            send(ex, 200, "text/plain", runAdb(argv));
+        } catch (IOException e) {
+            send(ex, 500, "text/plain",
+                "Could not start ADB. Check that adb is installed and on PATH.");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            send(ex, 500, "text/plain", "Request interrupted");
+        }
+    }
+
+    /** Runs `adb <args>` (argument list, never a shell string); returns capped output. */
+    private static String runAdb(List<String> args) throws IOException, InterruptedException {
+        List<String> cmd = new ArrayList<>(List.of("adb"));
+        cmd.addAll(args);
+        Process p = new ProcessBuilder(cmd).redirectErrorStream(true).start();
+        p.getOutputStream().close(); // no stdin: interactive commands exit
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        Thread reader = new Thread(() -> {
+            byte[] buf = new byte[8192];
+            try (var in = p.getInputStream()) {
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    if (out.size() < MAX_OUTPUT) out.write(buf, 0, n);
+                }
+            } catch (IOException ignored) {
+            }
+        });
+        reader.start();
+
+        boolean done = p.waitFor(30, TimeUnit.SECONDS);
+        if (!done) p.destroyForcibly();
+        reader.join(2000);
+
+        String text = out.toString(StandardCharsets.UTF_8);
+        if (out.size() >= MAX_OUTPUT) text += "\n[output truncated]";
+        if (!done) text += "\n[timed out after 30s]";
+        return text.isEmpty() ? "(no output)" : text;
+    }
+
+    // ---- security ---------------------------------------------------------
 
     private static String newToken() {
         byte[] b = new byte[16];
@@ -153,16 +120,14 @@ public class AdbBrowserHelper {
 
     /** Blocks DNS rebinding: the Host header must be our own loopback name. */
     private static boolean hostOk(HttpExchange ex) {
-        String host = ex.getRequestHeaders().getFirst("Host");
-        return host != null
-            && (host.equals("127.0.0.1:" + PORT) || host.equals("localhost:" + PORT));
+        return ORIGINS.contains("http://" + ex.getRequestHeaders().getFirst("Host"));
     }
 
     /** Host + Origin (if sent) + token. Sends the error response itself. */
     private static boolean authorized(HttpExchange ex) throws IOException {
         if (!hostOk(ex)) { send(ex, 403, "text/plain", "Bad Host"); return false; }
         String origin = ex.getRequestHeaders().getFirst("Origin");
-        if (origin != null && !origin.equals(ORIGIN_IP) && !origin.equals(ORIGIN_NAME)) {
+        if (origin != null && !ORIGINS.contains(origin)) {
             send(ex, 403, "text/plain", "Bad Origin");
             return false;
         }
@@ -174,9 +139,7 @@ public class AdbBrowserHelper {
         return true;
     }
 
-    // ---- command parsing --------------------------------------------------
-
-    private static final int MAX_OUTPUT = 1_000_000;
+    // ---- helpers ----------------------------------------------------------
 
     /** Splits on whitespace; "double" and 'single' quotes group words. */
     static List<String> tokenize(String line) {
@@ -199,62 +162,14 @@ public class AdbBrowserHelper {
         return out;
     }
 
-    // ---- adb output -> JSON ----------------------------------------------
-
-    static String devicesToJson(String adbOutput) {
-        StringBuilder sb = new StringBuilder("[");
-        boolean first = true;
-        for (String line : List.of(adbOutput.split("\\R"))) {
-            line = line.trim();
-            if (line.isEmpty() || line.startsWith("List of devices")
-                || line.startsWith("*")) continue; // header / daemon messages
-            String[] parts = line.split("\\s+");
-            if (parts.length < 2) continue;
-
-            if (!first) sb.append(',');
-            first = false;
-            sb.append("{\"serial\":").append(q(parts[0]))
-              .append(",\"state\":").append(q(parts[1]));
-            for (int i = 2; i < parts.length; i++) {
-                int c = parts[i].indexOf(':');
-                if (c > 0) {
-                    sb.append(',').append(q(parts[i].substring(0, c)))
-                      .append(':').append(q(parts[i].substring(c + 1)));
-                }
-            }
-            sb.append('}');
-        }
-        return sb.append(']').toString();
-    }
-
-    private static String q(String s) {
-        StringBuilder sb = new StringBuilder("\"");
-        for (char ch : s.toCharArray()) {
-            switch (ch) {
-                case '"' -> sb.append("\\\"");
-                case '\\' -> sb.append("\\\\");
-                default -> {
-                    if (ch < 0x20) sb.append(String.format("\\u%04x", (int) ch));
-                    else sb.append(ch);
-                }
-            }
-        }
-        return sb.append('"').toString();
-    }
-
-    // ---- response ---------------------------------------------------------
-
-    private static void send(
-        HttpExchange exchange, int status, String type, String body
-    ) throws IOException {
+    private static void send(HttpExchange ex, int status, String type, String body)
+            throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().set(
-            "Content-Type", type + "; charset=utf-8");
-        exchange.getResponseHeaders().set("Cache-Control", "no-store");
-        exchange.sendResponseHeaders(status, bytes.length);
-        try (OutputStream out = exchange.getResponseBody()) {
+        ex.getResponseHeaders().set("Content-Type", type + "; charset=utf-8");
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.sendResponseHeaders(status, bytes.length);
+        try (var out = ex.getResponseBody()) {
             out.write(bytes);
         }
-        exchange.close();
     }
 }
