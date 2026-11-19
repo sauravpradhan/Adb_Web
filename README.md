@@ -92,7 +92,7 @@ treat this tool carefully.
 - Structured JSON request format with automatic `-s <serial>`
 - Optional port in a Node.js version of the web layer
 
-##License
+## License
 
 Copyright 2026 Saurav Pradhan
 
